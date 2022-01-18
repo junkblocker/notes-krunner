@@ -86,7 +86,7 @@ class Runner(dbus.service.Object):
         # TODO: NoMatch = 0, CompletionMatch = 10, PossibleMatch = 30, InformationalMatch = 50, HelperMatch = 70, ExactMatch = 100
 
         # q("In Match")
-        create = f"{query}.rst"
+        create = f"{query}.md"
         # q(query)
         results = []
         if len(query) <= 2:
@@ -99,7 +99,7 @@ class Runner(dbus.service.Object):
         expr = self.find_cmd
         result = subprocess.run(expr, capture_output=True, check=False)
         for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-            if line != "":
+            if line != "" and '.obsidian/' not in line:
                 if lcquery == create.lower() and ((line not in seen) or seen[line] < 1.0):
                     seen[line] = 1.0
                     # q("1.0")
@@ -121,7 +121,7 @@ class Runner(dbus.service.Object):
 
         result = subprocess.run(expr, capture_output=True, check=False)
         for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-            if line != "":
+            if line != "" and '.obsidian/' not in line:
                 if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.95)):
                     # q("0.95")
                     seen[line] = 0.95
@@ -141,7 +141,7 @@ class Runner(dbus.service.Object):
 
         result = subprocess.run(expr, capture_output=True, check=False)
         for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-            if line != "":
+            if line != "" and ".obsidian/" not in line:
                 if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
                     # q("0.85")
                     seen[line] = 0.85
