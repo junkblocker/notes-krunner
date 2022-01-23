@@ -64,19 +64,13 @@ def get_opener():
 
 class Runner(dbus.service.Object):
     def __init__(self):
-        #q("In Runner")
+        self.notes_dirs = []
+        # q("In Runner")
         notes_config = Path('~/.config/notes-krunner').expanduser()
         with open(notes_config) as conf:
             for line in conf.readlines():
-                self.ndir = line.rstrip()
-        #q(self.ndir)
-        os.chdir(self.ndir)
-        if os.path.exists('.git'):
-            self.git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep']
-            self.find_cmd = ['/usr/bin/git', 'ls-files', '--others']
-        else:
-            self.git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep', '--no-index']
-            self.find_cmd = ['/usr/bin/find', '.', '-type', 'f']
+                self.notes_dirs += [line.rstrip()]
+        # q(self.notes_dirs)
         # q("In Runner at the end")
         dbus.service.Object.__init__(self, dbus.service.BusName("org.kde.%{APPNAMELC}", dbus.SessionBus()), OBJPATH)
 
@@ -85,82 +79,101 @@ class Runner(dbus.service.Object):
         """This method is used to get the matches and it returns a list of tuples"""
         # TODO: NoMatch = 0, CompletionMatch = 10, PossibleMatch = 30, InformationalMatch = 50, HelperMatch = 70, ExactMatch = 100
 
-        # q("In Match")
-        create = f"{query}.md"
+        seen = {}  # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
         # q(query)
         results = []
-        if len(query) <= 2:
-            return results
 
-        lcquery = query.lower()
+        pwd = os.getcwd()
+        for ndir in self.notes_dirs:
+            os.chdir(pwd)
+            # q(f"Operating in {ndir}")
+            os.chdir(ndir)
+            if os.path.exists('.git'):
+                git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep']
+                find_cmd = ['/usr/bin/git', 'ls-files', '--others']
+            else:
+                git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep', '--no-index']
+                find_cmd = ['/usr/bin/find', '.', '-type', 'f']
+            # q("In Match")
+            create = f"{ndir}/{query}.md"
+            # q(create)
+            if len(query) <= 2:
+                # q("Too short")
+                return results
 
-        seen = {}  # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
-        # Exact match, ignorecase match
-        expr = self.find_cmd
-        result = subprocess.run(expr, capture_output=True, check=False)
-        for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-            if line != "" and '.obsidian/' not in line:
-                if lcquery == create.lower() and ((line not in seen) or seen[line] < 1.0):
-                    seen[line] = 1.0
-                    # q("1.0")
-                    continue
-                if lcquery in line.lower() and ((line not in seen) or seen[line] < 1.0):
-                    seen[line] = 0.97
-                    # q("0.97")
-                    continue
+            lcquery = query.lower()
 
-        # All expressions word match
-        expr = self.git_grep_cmd + ["-l", "-i"]
+            # q(lcquery)
+            # Exact match, ignorecase match
+            expr = find_cmd
+            result = subprocess.run(expr, capture_output=True, check=False)
+            for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                if line != "" and '.obsidian/' not in line:
+                    if lcquery == create.lower() and ((line not in seen) or seen[line] < 1.0):
+                        seen[f"{ndir}/{line}"] = 1.0
+                        # q("1.0")
+                        continue
+                    if lcquery in line.lower() and ((line not in seen) or seen[line] < 1.0):
+                        seen[f"{ndir}/{line}"] = 0.97
+                        # q("0.97")
+                        continue
 
-        for fragment in query.split():
-            expr += ["-e"]
-            expr += [r'\b' + fragment + r'\b']
-            expr += ["--and"]
-        if expr[-1] == "--and":
-            expr = expr[0:-1]
+            # All expressions word match
+            expr = git_grep_cmd + ["-l", "-i"]
 
-        result = subprocess.run(expr, capture_output=True, check=False)
-        for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-            if line != "" and '.obsidian/' not in line:
-                if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.95)):
-                    # q("0.95")
-                    seen[line] = 0.95
-                    continue
-                if line not in seen:
-                    # q("0.90")
-                    seen[line] = 0.90
+            for fragment in query.split():
+                expr += ["-e"]
+                expr += [r'\b' + fragment + r'\b']
+                expr += ["--and"]
+            if expr[-1] == "--and":
+                expr = expr[0:-1]
 
-        # All expressions non-word match
-        expr = self.git_grep_cmd + ["-l", "-i"]
-        for fragment in query.split():
-            expr += ["-e"]
-            expr += [fragment]
-            expr += ["--and"]
-        if expr[-1] == "--and":
-            expr = expr[0:-1]
+            result = subprocess.run(expr, capture_output=True, check=False)
+            for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                if line != "" and '.obsidian/' not in line:
+                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.95)):
+                        # q("0.95")
+                        seen[f"{ndir}/{line}"] = 0.95
+                        continue
+                    if line not in seen:
+                        # q("0.90")
+                        seen[f"{ndir}/{line}"] = 0.90
 
-        result = subprocess.run(expr, capture_output=True, check=False)
-        for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-            if line != "" and ".obsidian/" not in line:
-                if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
-                    # q("0.85")
-                    seen[line] = 0.85
-                    continue
-                if line not in seen:
-                    # q("0.80")
-                    seen[line] = 0.80
+            # All expressions non-word match
+            expr = git_grep_cmd + ["-l", "-i"]
+            for fragment in query.split():
+                expr += ["-e"]
+                expr += [fragment]
+                expr += ["--and"]
+            if expr[-1] == "--and":
+                expr = expr[0:-1]
+
+            result = subprocess.run(expr, capture_output=True, check=False)
+            for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                if line != "" and ".obsidian/" not in line:
+                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
+                        # q("0.85")
+                        seen[f"{ndir}/{line}"] = 0.85
+                        continue
+                    if line not in seen:
+                        # q("0.80")
+                        seen[f"{ndir}/{line}"] = 0.80
 
         for item, score in seen.items():
             if '_attic/' in item:
-                #q("Reducing score for " + item)
+                # q("Reducing score for " + item)
                 score = score - 0.05
             # data, text, icon, type (Plasma::QueryType), relevance (0-1), properties (subtext, category and urls)
-            results += [(self.ndir + "/" + item, item, "document-edit", int(score * 100), score, {'subtext': item})]
+            results += [(item, item.rsplit("/")[-1], "document-edit", int(score * 100), score, {
+                'subtext': item
+            })]
 
         # If a file with exact match was not found, provide a creation option
-        has_file = any(line.lower() == create.lower() for line in seen)
+        has_file = any(line.lower().endswith(f"/{create.lower()}") for line in seen)
         if not has_file:
-            results += [(f"{self.ndir}/{create}", f"Create {create}", "document-edit", 85, 1.0, {'subtext': create})]
+            results += [(f"{ndir}/{create}", f"Create {ndir}/{create}", "document-edit", 85, 1.0, {
+                'subtext': create
+            })]
 
         # q("end of match")
         return results
