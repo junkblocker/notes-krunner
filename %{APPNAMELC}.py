@@ -10,6 +10,8 @@ import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
 
+from typing import List
+
 DBusGMainLoop(set_as_default=True)
 
 OBJPATH = '/%{APPNAMELC}'
@@ -35,43 +37,45 @@ IFACE = "org.kde.krunner1"
 #     return len(findProcessInfoByName(processName)) > 0
 
 
-def get_opener():
+def get_openers(data: str, action_id: str) -> List[List[str]]:
+    openers: List[List[str]] = [[
+        'xdg-open', 'obsidian://open?vault=notes&file=' + os.path.basename(data.rsplit("|")[-1]).replace(' ', '%20')
+    ]]
+
+    data = data.replace("|", "/")
     if os.path.exists(os.path.expanduser(os.path.expandvars("~/.config/prefer_nvim"))):
         if os.path.exists("/usr/bin/nvim-qt"):
             if os.path.exists(os.environ["HOME"] + "/.local/bin/nvr"):
-                return [os.environ["HOME"] + "/.local/bin/nvr", "--remote-tab"]
-            return ["/usr/bin/nvim-qt"]
-
-        if os.path.exists("/usr/bin/nvim") and os.path.exists("/usr/bin/konsole"):
-            return ["/usr/bin/konsole", "-e", "/usr/bin/nvim"]
-
-    if os.path.exists("/usr/bin/gvim"):
-        return ["/usr/bin/gvim", "--remote-tab"]
-
-    if os.path.exists("/usr/bin/nvim"):
+                openers += [[os.environ["HOME"] + "/.local/bin/nvr", "--remote-tab", data]]
+            else:
+                openers += [["/usr/bin/nvim-qt", data]]
+        elif os.path.exists("/usr/bin/nvim") and os.path.exists("/usr/bin/konsole"):
+            openers += [["/usr/bin/konsole", "-e", "/usr/bin/nvim", data]]
+    elif os.path.exists("/usr/bin/gvim"):
+        openers += [["/usr/bin/gvim", "--remote-tab", data]]
+    elif os.path.exists("/usr/bin/nvim"):
         if os.path.exists(os.environ["HOME"] + "/.local/bin/nvr"):
-            return ["/usr/bin/konsole", "-e", os.environ["HOME"] + "/.local/bin/nvr", "--remote-tab"]
+            openers += [["/usr/bin/konsole", "-e", os.environ["HOME"] + "/.local/bin/nvr", "--remote-tab", data]]
         else:
-            return ["/usr/bin/konsole", "-e", "/usr/bin/nvim"]
-    if os.path.exists("/usr/bin/vim"):
-        return ["/usr/bin/konsole", "-e", "/usr/bin/vim"]
-    if os.path.exists("/usr/bin/kate"):
-        return ["/usr/bin/kate"]
-    if os.path.exists("/usr/bin/kwrite"):
-        return ["/usr/bin/kwrite"]
-    return ["/usr/bin/gedit"]
+            openers += [["/usr/bin/konsole", "-e", "/usr/bin/nvim", data]]
+    elif os.path.exists("/usr/bin/vim"):
+        openers += [["/usr/bin/konsole", "-e", "/usr/bin/vim", data]]
+    elif os.path.exists("/usr/bin/kate"):
+        openers += [["/usr/bin/kate", data]]
+    elif os.path.exists("/usr/bin/kwrite"):
+        openers += [["/usr/bin/kwrite", data]]
+    else:
+        openers += [["/usr/bin/gedit", data]]
+    return openers
 
 
 class Runner(dbus.service.Object):
     def __init__(self):
         self.notes_dirs = []
-        # q("In Runner")
         notes_config = Path('~/.config/notes-krunner').expanduser()
         with open(notes_config) as conf:
             for line in conf.readlines():
                 self.notes_dirs += [line.rstrip()]
-        # q(self.notes_dirs)
-        # q("In Runner at the end")
         dbus.service.Object.__init__(self, dbus.service.BusName("org.kde.%{APPNAMELC}", dbus.SessionBus()), OBJPATH)
 
     @dbus.service.method(IFACE, in_signature='s', out_signature='a(sssida{sv})')
@@ -80,13 +84,11 @@ class Runner(dbus.service.Object):
         # TODO: NoMatch = 0, CompletionMatch = 10, PossibleMatch = 30, InformationalMatch = 50, HelperMatch = 70, ExactMatch = 100
 
         seen = {}  # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
-        # q(query)
         results = []
 
         pwd = os.getcwd()
         for ndir in self.notes_dirs:
             os.chdir(pwd)
-            # q(f"Operating in {ndir}")
             os.chdir(ndir)
             if os.path.exists('.git'):
                 git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep']
@@ -94,28 +96,22 @@ class Runner(dbus.service.Object):
             else:
                 git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep', '--no-index']
                 find_cmd = ['/usr/bin/find', '.', '-type', 'f']
-            # q("In Match")
             create = f"{ndir}/{query}.md"
-            # q(create)
             if len(query) <= 2:
-                # q("Too short")
                 return results
 
             lcquery = query.lower()
 
-            # q(lcquery)
             # Exact match, ignorecase match
             expr = find_cmd
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and '.obsidian/' not in line:
                     if lcquery == create.lower() and ((line not in seen) or seen[line] < 1.0):
-                        seen[f"{ndir}/{line}"] = 1.0
-                        # q("1.0")
+                        seen[f"{ndir}|{line}"] = 1.0
                         continue
                     if lcquery in line.lower() and ((line not in seen) or seen[line] < 1.0):
-                        seen[f"{ndir}/{line}"] = 0.97
-                        # q("0.97")
+                        seen[f"{ndir}|{line}"] = 0.97
                         continue
 
             # All expressions word match
@@ -132,12 +128,10 @@ class Runner(dbus.service.Object):
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and '.obsidian/' not in line:
                     if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.95)):
-                        # q("0.95")
-                        seen[f"{ndir}/{line}"] = 0.95
+                        seen[f"{ndir}|{line}"] = 0.95
                         continue
                     if line not in seen:
-                        # q("0.90")
-                        seen[f"{ndir}/{line}"] = 0.90
+                        seen[f"{ndir}|{line}"] = 0.90
 
             # All expressions non-word match
             expr = git_grep_cmd + ["-l", "-i"]
@@ -152,30 +146,22 @@ class Runner(dbus.service.Object):
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and ".obsidian/" not in line:
                     if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
-                        # q("0.85")
-                        seen[f"{ndir}/{line}"] = 0.85
+                        seen[f"{ndir}|{line}"] = 0.85
                         continue
                     if line not in seen:
-                        # q("0.80")
-                        seen[f"{ndir}/{line}"] = 0.80
+                        seen[f"{ndir}|{line}"] = 0.80
 
         for item, score in seen.items():
             if '_attic/' in item:
-                # q("Reducing score for " + item)
                 score = score - 0.05
             # data, text, icon, type (Plasma::QueryType), relevance (0-1), properties (subtext, category and urls)
-            results += [(item, item.rsplit("/")[-1], "document-edit", int(score * 100), score, {
-                'subtext': item
-            })]
+            results += [(item, item.rsplit("|")[-1], "document-edit", int(score * 100), score, {'subtext': item})]
 
         # If a file with exact match was not found, provide a creation option
         has_file = any(line.lower().endswith(f"/{create.lower()}") for line in seen)
         if not has_file:
-            results += [(f"{ndir}/{create}", f"Create {ndir}/{create}", "document-edit", 85, 1.0, {
-                'subtext': create
-            })]
+            results += [(f"{ndir}/{create}", f"Create {ndir}/{create}", "document-edit", 85, 1.0, {'subtext': create})]
 
-        # q("end of match")
         return results
 
     @dbus.service.method(IFACE, out_signature='a(sss)')
@@ -186,48 +172,40 @@ class Runner(dbus.service.Object):
 
     @dbus.service.method(IFACE, in_signature='ss')
     def Run(self, data: str, action_id: str):
-        # q(os.environ["USER"])
-        # q(data)  # Actually dbus.String() but a bunch of magic going on
         wraise = Path('~/bin/wraise').expanduser()
-        opener = get_opener()
-        try:
-            # q("In Run")
-            _ = subprocess.Popen(opener + [data]).pid
-            if wraise.exists():
-                _ = subprocess.Popen([wraise, '-f', 'gvim']).pid
-            elif os.environ["XDG_SESSION_TYPE"] == "x11":
-                result = subprocess.run(['/usr/bin/xdotool', 'search', '--classname', 'gvim'],
-                                        check=False,
-                                        capture_output=True)
-                for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-                    if line != "":
-                        _ = subprocess.Popen(['xdotool', 'windowactivate', line]).pid
-        except Exception as e:
-            # q(e)
-            pass
-        # try:
-        #     for user in self.users:
-        #         if user is not os.environ["USER"] and (
-        #                 "/home/" + os.environ["USER"]) not in data:  # data is a dbus.String so need to do this thing
-        #             otherpath = self.notesdirs_by_user[user] + data.removeprefix(
-        #                 self.notesdirs_by_user[os.environ["USER"]])
-        #             if os.path.exists(otherpath):
-        #                 # q(otherpath + " exists")
-        #                 _ = subprocess.Popen(opener + [otherpath]).pid
-        #                 if wraise.exists():
-        #                     _ = subprocess.Popen([wraise, '-f', 'gvim']).pid
-        #                 elif os.environ["XDG_SESSION_TYPE"] == "x11":
-        #                     result = subprocess.run(['/usr/bin/xdotool', 'search', '--classname', 'gvim'],
-        #                                             check=False,
-        #                                             capture_output=True)
-        #                     for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-        #                         if line != "":
-        #                             _ = subprocess.Popen(['xdotool', 'windowactivate', line]).pid
-        #             # else:
-        #             # q(otherpath + " does not exist")
-        # except Exception as e:
-        #     # q(e)
-        #     pass
+        for opener in get_openers(data, action_id):
+            try:
+                _ = subprocess.Popen(opener).pid
+                if wraise.exists():
+                    _ = subprocess.Popen([wraise, '-f', 'gvim']).pid
+                elif os.environ["XDG_SESSION_TYPE"] == "x11":
+                    result = subprocess.run(['/usr/bin/xdotool', 'search', '--classname', 'gvim'],
+                                            check=False,
+                                            capture_output=True)
+                    for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                        if line != "":
+                            _ = subprocess.Popen(['xdotool', 'windowactivate', line]).pid
+            except Exception as e:
+                pass
+            # try:
+            #     for user in self.users:
+            #         if user is not os.environ["USER"] and (
+            #                 "/home/" + os.environ["USER"]) not in data:  # data is a dbus.String so need to do this thing
+            #             otherpath = self.notesdirs_by_user[user] + data.removeprefix(
+            #                 self.notesdirs_by_user[os.environ["USER"]])
+            #             if os.path.exists(otherpath):
+            #                 _ = subprocess.Popen(opener + [otherpath]).pid
+            #                 if wraise.exists():
+            #                     _ = subprocess.Popen([wraise, '-f', 'gvim']).pid
+            #                 elif os.environ["XDG_SESSION_TYPE"] == "x11":
+            #                     result = subprocess.run(['/usr/bin/xdotool', 'search', '--classname', 'gvim'],
+            #                                             check=False,
+            #                                             capture_output=True)
+            #                     for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+            #                         if line != "":
+            #                             _ = subprocess.Popen(['xdotool', 'windowactivate', line]).pid
+            # except Exception as e:
+            #     pass
 
 
 # print(data, action_id)
