@@ -5,8 +5,18 @@ shopt -q -o verbose && VERBOSE=1
 [[ -n ${DEBUG:-} ]] && set -x
 [[ -n ${VERBOSE:-} ]] && set -v
 
+: "${me:="${0##*/}"}"
+if [[ -n "$(command -v notify-send)" ]]; then
+    notify() {
+        notify-send "$@"
+    }
+else
+    notify() {
+        echo "$@" >&2
+    }
+fi
 warn() {
-    echo "${me:-${0##*/}}: [0;31m${*}[0m" >&2
+    printf "%s:: \e[0;31m%s\e[0m" "${me}" "$*" >&2
     notify "Error: ${me}" "$*" || true
 }
 die() {
@@ -44,5 +54,5 @@ render "${PROJECTDIR}/%{APPNAMELC}_autostart.desktop" ~/.config/autostart/"${APP
 render "${PROJECTDIR}/org.kde.%{APPNAMELC}.service" ~/.local/share/dbus-1/services/"org.kde.${APPNAMELC}.service"
 render "${PROJECTDIR}/%{APPNAMELC}.py" "${PROJECTDIR}/${APPNAMELC}.py"
 
+command rm -rf ~/.cache/krunner || true
 kquitapp5 krunner
-echo "Done"

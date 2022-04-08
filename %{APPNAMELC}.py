@@ -1,11 +1,9 @@
 #!/usr/bin/python3
-
+"""A Plasma runner."""
 #import q
 import os
 from pathlib import Path
 import subprocess
-
-import psutil
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
@@ -15,34 +13,23 @@ from typing import List
 DBusGMainLoop(set_as_default=True)
 
 OBJPATH = '/%{APPNAMELC}'
-
 IFACE = "org.kde.krunner1"
-
-# def findProcessInfoByName(processName):
-#     # Here is the list of all the PIDs of all the running process
-#     # whose name contains the given string processName
-#     listOfProcessObjects = []
-#     # Iterating over the all the running process
-#     for proc in psutil.process_iter():
-#         try:
-#             pinfo = proc.as_dict(attrs=['pid', 'name', 'create_time'])
-#             # Checking if process name contains the given name string.
-#             if processName.lower() == pinfo['name'].lower():
-#                 listOfProcessObjects.append(pinfo)
-#         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-#             pass
-#     return listOfProcessObjects
-
-# def processExists(processName):
-#     return len(findProcessInfoByName(processName)) > 0
+SERVICE = "org.kde.%{APPNAMELC}"
 
 
 def get_openers(data: str, action_id: str) -> List[List[str]]:
-    openers: List[List[str]] = [[
-        'xdg-open', 'obsidian://open?vault=notes&file=' + os.path.basename(data.rsplit("|")[-1]).replace(' ', '%20')
-    ]]
+    openers: List[List[str]] = [[]]
 
-    data = data.replace("|", "/")
+    (vault, note) = data.rsplit("|")
+    data = os.path.join(vault, note)
+
+    if os.path.exists(os.environ["HOME"] + "/Applications/Obsidian.AppImage"):
+        if os.path.exists(os.path.join(vault, note)):
+            openers = [['xdg-open', 'obsidian://open?vault=notes&file=' + note.replace(' ', '%20')]]
+        else:
+            openers = [['xdg-open', 'obsidian://new?vault=notes&file=' + note.replace(' ', '%20')]]
+        return openers
+
     if os.path.exists(os.path.expanduser(os.path.expandvars("~/.config/prefer_nvim"))):
         if os.path.exists("/usr/bin/nvim-qt"):
             if os.path.exists(os.environ["HOME"] + "/.local/bin/nvr"):
@@ -76,14 +63,19 @@ class Runner(dbus.service.Object):
         with open(notes_config) as conf:
             for line in conf.readlines():
                 self.notes_dirs += [line.rstrip()]
-        dbus.service.Object.__init__(self, dbus.service.BusName("org.kde.%{APPNAMELC}", dbus.SessionBus()), OBJPATH)
+        dbus.service.Object.__init__(
+            self,
+            dbus.service.BusName(SERVICE, dbus.SessionBus()),
+            OBJPATH,
+        )
 
     @dbus.service.method(IFACE, in_signature='s', out_signature='a(sssida{sv})')
     def Match(self, query: str):
         """This method is used to get the matches and it returns a list of tuples"""
         # TODO: NoMatch = 0, CompletionMatch = 10, PossibleMatch = 30, InformationalMatch = 50, HelperMatch = 70, ExactMatch = 100
 
-        seen = {}  # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
+        # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
+        seen: Dict[str, float] = {}
         results = []
 
         pwd = os.getcwd()
@@ -160,7 +152,9 @@ class Runner(dbus.service.Object):
         # If a file with exact match was not found, provide a creation option
         has_file = any(line.lower().endswith(f"/{create.lower()}") for line in seen)
         if not has_file:
-            results += [(f"{ndir}/{create}", f"Create {ndir}/{create}", "document-edit", 85, 1.0, {'subtext': create})]
+            for ndir in self.notes_dirs:
+                create = f"{ndir}|{query}.md"
+                results += [(f"{create}", f"Create {ndir}/{query}.md", "document-edit", 85, 1.0, {'subtext': create})]
 
         return results
 
@@ -173,7 +167,8 @@ class Runner(dbus.service.Object):
     @dbus.service.method(IFACE, in_signature='ss')
     def Run(self, data: str, action_id: str):
         wraise = Path('~/bin/wraise').expanduser()
-        for opener in get_openers(data, action_id):
+        openers = get_openers(data, action_id)
+        for opener in openers:
             try:
                 _ = subprocess.Popen(opener).pid
                 if wraise.exists():
@@ -187,25 +182,6 @@ class Runner(dbus.service.Object):
                             _ = subprocess.Popen(['xdotool', 'windowactivate', line]).pid
             except Exception as e:
                 pass
-            # try:
-            #     for user in self.users:
-            #         if user is not os.environ["USER"] and (
-            #                 "/home/" + os.environ["USER"]) not in data:  # data is a dbus.String so need to do this thing
-            #             otherpath = self.notesdirs_by_user[user] + data.removeprefix(
-            #                 self.notesdirs_by_user[os.environ["USER"]])
-            #             if os.path.exists(otherpath):
-            #                 _ = subprocess.Popen(opener + [otherpath]).pid
-            #                 if wraise.exists():
-            #                     _ = subprocess.Popen([wraise, '-f', 'gvim']).pid
-            #                 elif os.environ["XDG_SESSION_TYPE"] == "x11":
-            #                     result = subprocess.run(['/usr/bin/xdotool', 'search', '--classname', 'gvim'],
-            #                                             check=False,
-            #                                             capture_output=True)
-            #                     for line in str.split(result.stdout.decode("UTF-8"), "\n"):
-            #                         if line != "":
-            #                             _ = subprocess.Popen(['xdotool', 'windowactivate', line]).pid
-            # except Exception as e:
-            #     pass
 
 
 # print(data, action_id)
