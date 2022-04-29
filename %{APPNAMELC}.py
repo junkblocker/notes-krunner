@@ -79,14 +79,15 @@ class Runner(dbus.service.Object):
         results = []
 
         pwd = os.getcwd()
+        found = False
         for ndir in self.notes_dirs:
             os.chdir(pwd)
             os.chdir(ndir)
             if os.path.exists('.git'):
-                git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep']
+                grep_cmd = ['/usr/bin/git', '--no-pager', 'grep']
                 find_cmd = ['/usr/bin/git', 'ls-files', '--others']
             else:
-                git_grep_cmd = ['/usr/bin/git', '--no-pager', 'grep', '--no-index']
+                grep_cmd = ['/usr/bin/git', '--no-pager', 'grep', '--no-index']
                 find_cmd = ['/usr/bin/find', '.', '-type', 'f']
             create = f"{ndir}/{query}.md"
             if len(query) <= 2:
@@ -101,13 +102,15 @@ class Runner(dbus.service.Object):
                 if line != "" and '.obsidian/' not in line:
                     if lcquery == create.lower() and ((line not in seen) or seen[line] < 1.0):
                         seen[f"{ndir}|{line}"] = 1.0
+                        found = True
                         continue
                     if lcquery in line.lower() and ((line not in seen) or seen[line] < 1.0):
                         seen[f"{ndir}|{line}"] = 0.97
+                        found = True
                         continue
 
             # All expressions word match
-            expr = git_grep_cmd + ["-l", "-i"]
+            expr = grep_cmd + ["-l", "-i"]
 
             for fragment in query.split():
                 expr += ["-e"]
@@ -121,12 +124,14 @@ class Runner(dbus.service.Object):
                 if line != "" and '.obsidian/' not in line:
                     if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.95)):
                         seen[f"{ndir}|{line}"] = 0.95
+                        found = True
                         continue
                     if line not in seen:
+                        found = True
                         seen[f"{ndir}|{line}"] = 0.90
 
             # All expressions non-word match
-            expr = git_grep_cmd + ["-l", "-i"]
+            expr = grep_cmd + ["-l", "-i"]
             for fragment in query.split():
                 expr += ["-e"]
                 expr += [fragment]
@@ -139,13 +144,32 @@ class Runner(dbus.service.Object):
                 if line != "" and ".obsidian/" not in line:
                     if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
                         seen[f"{ndir}|{line}"] = 0.85
+                        found = True
                         continue
                     if line not in seen:
                         seen[f"{ndir}|{line}"] = 0.80
+                        found = True
+
+        if not found:
+            for ndir in self.notes_dirs:
+                os.chdir(pwd)
+                os.chdir(ndir)
+                expr = ["agrepr", "-i", "-l", query]
+
+                result = subprocess.run(expr, capture_output=True, check=False)
+                for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                    if line != "" and ".obsidian/" not in line:
+                        if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.75)):
+                            seen[f"{ndir}|{line}"] = 0.75
+                            continue
+                        if line not in seen:
+                            seen[f"{ndir}|{line}"] = 0.70
 
         for item, score in seen.items():
             if '_attic/' in item:
                 score = score - 0.05
+            if '.stversions/' in item:
+                score = score - 0.10
             # data, text, icon, type (Plasma::QueryType), relevance (0-1), properties (subtext, category and urls)
             results += [(item, item.rsplit("|")[-1], "document-edit", int(score * 100), score, {'subtext': item})]
 
