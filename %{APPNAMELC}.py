@@ -128,7 +128,47 @@ class Runner(dbus.service.Object):
                         continue
                     if line not in seen:
                         found = True
+                        seen[f"{ndir}|{line}"] = 0.93
+
+            # All expressions non-word match
+            expr = grep_cmd + ["-l", "-i"]
+            for fragment in query.split():
+                expr += ["-e"]
+                expr += [r"\b" + fragment]
+                expr += ["--and"]
+            if expr[-1] == "--and":
+                expr = expr[0:-1]
+
+            result = subprocess.run(expr, capture_output=True, check=False)
+            for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                if line != "" and ".obsidian/" not in line:
+                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.90)):
                         seen[f"{ndir}|{line}"] = 0.90
+                        found = True
+                        continue
+                    if line not in seen:
+                        seen[f"{ndir}|{line}"] = 0.87
+                        found = True
+
+            # All expressions non-word match
+            expr = grep_cmd + ["-l", "-i"]
+            for fragment in query.split():
+                expr += ["-e"]
+                expr += [fragment + r"\b"]
+                expr += ["--and"]
+            if expr[-1] == "--and":
+                expr = expr[0:-1]
+
+            result = subprocess.run(expr, capture_output=True, check=False)
+            for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                if line != "" and ".obsidian/" not in line:
+                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
+                        seen[f"{ndir}|{line}"] = 0.85
+                        found = True
+                        continue
+                    if line not in seen:
+                        seen[f"{ndir}|{line}"] = 0.83
+                        found = True
 
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
@@ -142,12 +182,12 @@ class Runner(dbus.service.Object):
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and ".obsidian/" not in line:
-                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
-                        seen[f"{ndir}|{line}"] = 0.85
+                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.80)):
+                        seen[f"{ndir}|{line}"] = 0.80
                         found = True
                         continue
                     if line not in seen:
-                        seen[f"{ndir}|{line}"] = 0.80
+                        seen[f"{ndir}|{line}"] = 0.77
                         found = True
 
         if not found:
@@ -163,7 +203,7 @@ class Runner(dbus.service.Object):
                             seen[f"{ndir}|{line}"] = 0.75
                             continue
                         if line not in seen:
-                            seen[f"{ndir}|{line}"] = 0.70
+                            seen[f"{ndir}|{line}"] = 0.73
 
         for item, score in seen.items():
             if '_attic/' in item:
