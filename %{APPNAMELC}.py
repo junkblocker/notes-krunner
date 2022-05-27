@@ -2,13 +2,13 @@
 """A Plasma runner."""
 #import q
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
+from typing import List
+
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
-
-from typing import List
 
 DBusGMainLoop(set_as_default=True)
 
@@ -80,7 +80,10 @@ class Runner(dbus.service.Object):
 
         pwd = os.getcwd()
         found = False
+
+        processing = 0
         for ndir in self.notes_dirs:
+            processing += 1
             os.chdir(pwd)
             os.chdir(ndir)
             if os.path.exists('.git'):
@@ -109,6 +112,11 @@ class Runner(dbus.service.Object):
                         found = True
                         continue
 
+            # We already have enough good results
+            if len(seen.keys()) >= processing * 10:
+                # q("enough")
+                continue
+
             # All expressions word match
             expr = grep_cmd + ["-l", "-i"]
 
@@ -130,6 +138,11 @@ class Runner(dbus.service.Object):
                         found = True
                         seen[f"{ndir}|{line}"] = 0.93
 
+            # We already have enough good results
+            if len(seen.keys()) >= processing * 10:
+                # q("enough")
+                continue
+
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
             for fragment in query.split():
@@ -149,6 +162,11 @@ class Runner(dbus.service.Object):
                     if line not in seen:
                         seen[f"{ndir}|{line}"] = 0.87
                         found = True
+
+            # We already have enough good results
+            if len(seen.keys()) >= processing * 10:
+                # q("enough")
+                break
 
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
@@ -170,6 +188,11 @@ class Runner(dbus.service.Object):
                         seen[f"{ndir}|{line}"] = 0.83
                         found = True
 
+            # We already have enough good results
+            if len(seen.keys()) >= processing * 10:
+                # q("enough")
+                break
+
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
             for fragment in query.split():
@@ -189,6 +212,11 @@ class Runner(dbus.service.Object):
                     if line not in seen:
                         seen[f"{ndir}|{line}"] = 0.77
                         found = True
+
+            # We already have enough good results
+            if len(seen.keys()) >= processing * 10:
+                # q("enough")
+                break
 
         if not found:
             for ndir in self.notes_dirs:
