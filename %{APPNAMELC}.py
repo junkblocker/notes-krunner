@@ -27,6 +27,12 @@ def get_opener(data: str) -> List[str] | None:
     (vault, note) = data.rsplit("|")
     datapath = str(Path(vault, note))
 
+    # Obsidian has issues opening paths with spaces in them even when URL escaped
+    # and kate has a previewer
+    if ' ' in note and Path('/usr/bin/kate').exists():
+        return ['/usr/bin/kate', datapath]
+
+
     if (Path("/var/lib/flatpak/app/md.obsidian.Obsidian").exists()
             or Path(os.environ["HOME"] + "/Applications/Obsidian.AppImage").exists()):
         if Path(vault, note).exists():
@@ -39,7 +45,7 @@ def get_opener(data: str) -> List[str] | None:
             f"obsidian://new?vault=notes&file={quote(note)}",
         ]
 
-    for opt in ('/usr/bin/nvim-qt', '/usr/bin/kate', '/usr/bin/kwrite', '/usr/bin/gedit'):
+    for opt in ('/usr/bin/kate', '/usr/bin/kwrite', '/usr/bin/nvim-qt', '/usr/bin/gedit'):
         if Path(opt).exists():
             return [opt, datapath]
 
