@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 from urllib.parse import quote
 
 import dbus.service
-#import q
+# import q
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
 
@@ -31,7 +31,6 @@ def get_opener(data: str) -> List[str] | None:
     # and kate has a previewer
     if ' ' in note and Path('/usr/bin/kate').exists():
         return ['/usr/bin/kate', datapath]
-
 
     if (Path("/var/lib/flatpak/app/md.obsidian.Obsidian").exists()
             or Path(os.environ["HOME"] + "/Applications/Obsidian.AppImage").exists()):
@@ -74,36 +73,37 @@ class Runner(dbus.service.Object):
         """This method is used to get the matches and it returns a list of tuples"""
         # NoMatch = 0, CompletionMatch = 10, PossibleMatch = 30, InformationalMatch = 50, HelperMatch = 70, ExactMatch = 100
 
-        # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
-        seen: Dict[str, float] = {}
+        results: list[tuple[str, str, str, int, float, dict[str, str]]] = []
 
-        results: List[Tuple[str, str, str, int, float, Dict[str, str]]] = []
+        if len(query) <= 2:
+            return results
 
         pwd = Path.cwd()
         found = False
 
-        processing = 0
+        lcquery = query.lower()
+
+        # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
+        seen: Dict[str, float] = {}
+
         for ndir in self.notes_dirs:
-            processing += 1
+            # q(ndir)
             os.chdir(pwd)
             os.chdir(ndir)
+            create = f"{ndir}/{query}.md"
             if Path(".git").exists():
                 grep_cmd = ["/usr/bin/git", "--no-pager", "grep"]
                 find_cmd = ["/usr/bin/git", "ls-files"]
             else:
                 grep_cmd = ["/usr/bin/git", "--no-pager", "grep", "--no-index"]
-                find_cmd = ["/usr/bin/find", ".", "-type", "f"]
-            create = f"{ndir}/{query}.md"
-            if len(query) <= 2:
-                return results
+                find_cmd = ["/usr/bin/find", ".", "-type", "f"] + [f"--iname '*{fragment}*'" for fragment in query.split()]
 
-            lcquery = query.lower()
-
-            # Exact match, ignorecase match
             expr = find_cmd
+
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and ".obsidian/" not in line:
+                    # q("find", line)
                     if lcquery == create.lower() and ((line not in seen) or seen[line] < 1.0):
                         seen[f"{ndir}|{line}"] = 1.0
                         found = True
@@ -112,11 +112,6 @@ class Runner(dbus.service.Object):
                         seen[f"{ndir}|{line}"] = 0.97
                         found = True
                         continue
-
-            # We already have enough good results
-            if len(seen.keys()) >= processing * 10:
-                # q("enough")
-                continue
 
             # All expressions word match
             expr = grep_cmd + ["-l", "-i"]
@@ -139,11 +134,6 @@ class Runner(dbus.service.Object):
                         found = True
                         seen[f"{ndir}|{line}"] = 0.93
 
-            # We already have enough good results
-            if len(seen.keys()) >= processing * 10:
-                # q("enough")
-                continue
-
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
             for fragment in query.split():
@@ -163,11 +153,6 @@ class Runner(dbus.service.Object):
                     if line not in seen:
                         seen[f"{ndir}|{line}"] = 0.87
                         found = True
-
-            # We already have enough good results
-            if len(seen.keys()) >= processing * 10:
-                # q("enough")
-                break
 
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
@@ -189,11 +174,6 @@ class Runner(dbus.service.Object):
                         seen[f"{ndir}|{line}"] = 0.83
                         found = True
 
-            # We already have enough good results
-            if len(seen.keys()) >= processing * 10:
-                # q("enough")
-                break
-
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
             for fragment in query.split():
@@ -214,11 +194,6 @@ class Runner(dbus.service.Object):
                         seen[f"{ndir}|{line}"] = 0.77
                         found = True
 
-            # We already have enough good results
-            if len(seen.keys()) >= processing * 10:
-                # q("enough")
-                break
-
         if not found:
             for ndir in self.notes_dirs:
                 os.chdir(pwd)
@@ -234,40 +209,49 @@ class Runner(dbus.service.Object):
                         if line not in seen:
                             seen[f"{ndir}|{line}"] = 0.73
 
-        for item, score in seen.items():
+        for item, relevance in seen.items():
+            # q(item, relevance)
             if "_attic/" in item:
-                score = score - 0.05
+                relevance = relevance - 0.05
             if ".stversions/" in item:
-                score = score - 0.10
+                relevance = relevance - 0.10
             # data, text, icon, type (Plasma::QueryType), relevance (0-1), properties (subtext, category and urls)
             results += [(
                 item,
                 item.rsplit("|")[-1],
                 "document-edit",
-                int(score * 100),
-                score,
+                100,
+                relevance,
                 {
                     "subtext": item
                 },
             )]
 
-        # If a file with exact match was not found, provide a creation option
-        has_file = any(line.lower().endswith(f"/{create.lower()}") for line in seen)
-        if not has_file:
-            for ndir in self.notes_dirs:
+        for ndir in self.notes_dirs:
+            has_file = False
+            create_path = Path(ndir, query).as_posix() + ".md"
+            for line in seen:
+                line = Path(*line.split("|")).as_posix()
+                if line == create_path:
+                    has_file = True
+                    break
+
+            # If a file with exact match was not found, provide a creation option
+            if not has_file:
                 create = f"{ndir}|{query}.md"
                 results += [(
                     f"{create}",
-                    f"Create {ndir}/{query}.md",
+                    f"Create {create_path}",
                     "document-edit",
-                    85,
+                    100,
                     1.0,
                     {
                         "subtext": create
                     },
                 )]
 
-        return results
+        results.sort(key=lambda x: x[4], reverse=True)
+        return results[:10]
 
     @dbus.service.method(IFACE, out_signature="a(sss)")
     def Actions(self):
