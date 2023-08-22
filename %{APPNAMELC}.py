@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """A Plasma runner."""
 import os
+import re
 import subprocess
 from contextlib import suppress
 from functools import cache
@@ -8,7 +9,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 import dbus.service
-import q
+
+# import q
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
 
@@ -24,17 +26,18 @@ SERVICE = "org.kde.%{APPNAMELC}"
 
 @cache
 def get_opener(data: str) -> list[str] | None:
-
     (vault, note) = data.rsplit("|")
     datapath = str(Path(vault, note))
 
     # Obsidian has issues opening paths with spaces in them even when URL escaped
     # and kate has a previewer
-    if ' ' in note and Path('/usr/bin/kate').exists():
-        return ['/usr/bin/kate', datapath]
+    if " " in note and Path("/usr/bin/kate").exists():
+        return ["/usr/bin/kate", datapath]
 
-    if (Path("/var/lib/flatpak/app/md.obsidian.Obsidian").exists()
-            or Path(os.environ["HOME"] + "/Applications/Obsidian.AppImage").exists()):
+    if (
+        Path("/var/lib/flatpak/app/md.obsidian.Obsidian").exists()
+        or Path(os.environ["HOME"] + "/Applications/Obsidian.AppImage").exists()
+    ):
         if Path(vault, note).exists():
             return [
                 "xdg-open",
@@ -45,11 +48,16 @@ def get_opener(data: str) -> list[str] | None:
             f"obsidian://new?vault=notes&file={quote(note)}",
         ]
 
-    for opt in ('/usr/bin/kate', '/usr/bin/kwrite', '/usr/bin/nvim-qt', '/usr/bin/gedit'):
+    for opt in (
+        "/usr/bin/kate",
+        "/usr/bin/kwrite",
+        "/usr/bin/nvim-qt",
+        "/usr/bin/gedit",
+    ):
         if Path(opt).exists():
             return [opt, datapath]
 
-    for opt in ('/usr/bin/nvim', '/usr/bin/vim', '/usr/bin/nano'):
+    for opt in ("/usr/bin/nvim", "/usr/bin/vim", "/usr/bin/nano"):
         if Path(opt).exists():
             return ["/usr/bin/konsole", "-e", opt, datapath]
 
@@ -85,9 +93,12 @@ class Runner(dbus.service.Object):
         found = False
 
         lcquery: str = query.lower()
-        q(lcquery)
-        hyphenated_lcq: str = lcquery.replace(' ', '-')
-        q(hyphenated_lcq)
+        # q(lcquery)
+        hyphenated_lcq: str = lcquery.replace(" ", "-")
+        # q(hyphenated_lcq)
+        rfind1regex = str.join(".", ("\\b" + x + "\\b" for x in lcquery.split()))
+
+        rfind2regex = str.join(".*", lcquery.split())
 
         # Tried to use results as a dict itself but the {'subtext': line} portion is not hashable :/
         seen: dict[str, float] = {}
@@ -102,25 +113,45 @@ class Runner(dbus.service.Object):
                 find_cmd = ["/usr/bin/git", "ls-files"]
             else:
                 grep_cmd = ["/usr/bin/git", "--no-pager", "grep", "--no-index"]
-                find_cmd = ["/usr/bin/find", ".", "-type", "f"] + [f"--iname '*{fragment}*'" for fragment in query.split()]
+                find_cmd = ["/usr/bin/find", ".", "-type", "f"]
+                # + [
+                # f"--iname '*{fragment}*'" for fragment in query.split()
+                # ]
 
             expr = find_cmd
 
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 # q(line)
-                if line == "" or ".obsidian/" in line or '_attic/' in line or '.trash' in line or line.endswith('/tags'):
+                if (
+                    line == ""
+                    or ".obsidian/" in line
+                    or "_attic/" in line
+                    or ".trash" in line
+                    or line.endswith("/tags")
+                ):
                     continue
-                # q("find", line)
                 with suppress(Exception):
-                    if lcquery == line.lower().rsplit('/', 2)[1].rsplit('.', 2)[0] and ((line not in seen) or seen[line] < 1.0):
+                    if lcquery == line.lower().rsplit("/", 2)[1].rsplit(".", 2)[0] and (
+                        (line not in seen) or seen[line] < 1.0
+                    ):
                         seen[f"{ndir}|{line}"] = 1.0
                         found = True
                         continue
-                if lcquery in line.lower() and ((line not in seen) or seen[line] < 1.0):
-                    seen[f"{ndir}|{line}"] = 0.97
-                    found = True
-                    continue
+                    if re.match(rfind1regex, line, re.IGNORECASE):
+                        seen[f"{ndir}|{line}"] = 0.99
+                        found = True
+                        continue
+                    if lcquery in line.lower() and (
+                        (line not in seen) or seen[line] < 1.0
+                    ):
+                        seen[f"{ndir}|{line}"] = 0.98
+                        found = True
+                        continue
+                    if re.match(rfind2regex, line, re.IGNORECASE):
+                        seen[f"{ndir}|{line}"] = 0.98
+                        found = True
+                        continue
 
             # All expressions word match
             expr = grep_cmd + ["-l", "-i"]
@@ -135,13 +166,15 @@ class Runner(dbus.service.Object):
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and ".obsidian/" not in line:
-                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.95)):
-                        seen[f"{ndir}|{line}"] = 0.95
+                    if lcquery in line.lower() and (
+                        (line not in seen) or (seen[line] < 0.98)
+                    ):
+                        seen[f"{ndir}|{line}"] = 0.98
                         found = True
                         continue
                     if line not in seen:
                         found = True
-                        seen[f"{ndir}|{line}"] = 0.93
+                        seen[f"{ndir}|{line}"] = 0.97
 
             # All expressions non-word match
             expr = grep_cmd + ["-l", "-i"]
@@ -155,12 +188,14 @@ class Runner(dbus.service.Object):
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and ".obsidian/" not in line:
-                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.90)):
-                        seen[f"{ndir}|{line}"] = 0.90
+                    if lcquery in line.lower() and (
+                        (line not in seen) or (seen[line] < 0.96)
+                    ):
+                        seen[f"{ndir}|{line}"] = 0.96
                         found = True
                         continue
                     if line not in seen:
-                        seen[f"{ndir}|{line}"] = 0.87
+                        seen[f"{ndir}|{line}"] = 0.95
                         found = True
 
             # All expressions non-word match
@@ -175,12 +210,14 @@ class Runner(dbus.service.Object):
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and ".obsidian/" not in line:
-                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.85)):
-                        seen[f"{ndir}|{line}"] = 0.85
+                    if lcquery in line.lower() and (
+                        (line not in seen) or (seen[line] < 0.94)
+                    ):
+                        seen[f"{ndir}|{line}"] = 0.94
                         found = True
                         continue
                     if line not in seen:
-                        seen[f"{ndir}|{line}"] = 0.83
+                        seen[f"{ndir}|{line}"] = 0.93
                         found = True
 
             # All expressions non-word match
@@ -195,12 +232,14 @@ class Runner(dbus.service.Object):
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                 if line != "" and ".obsidian/" not in line:
-                    if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.80)):
-                        seen[f"{ndir}|{line}"] = 0.80
+                    if lcquery in line.lower() and (
+                        (line not in seen) or (seen[line] < 0.92)
+                    ):
+                        seen[f"{ndir}|{line}"] = 0.92
                         found = True
                         continue
                     if line not in seen:
-                        seen[f"{ndir}|{line}"] = 0.77
+                        seen[f"{ndir}|{line}"] = 0.91
                         found = True
 
         if not found:
@@ -212,11 +251,13 @@ class Runner(dbus.service.Object):
                 result = subprocess.run(expr, capture_output=True, check=False)
                 for line in str.split(result.stdout.decode("UTF-8"), "\n"):
                     if line != "" and ".obsidian/" not in line:
-                        if lcquery in line.lower() and ((line not in seen) or (seen[line] < 0.75)):
-                            seen[f"{ndir}|{line}"] = 0.75
+                        if lcquery in line.lower() and (
+                            (line not in seen) or (seen[line] < 0.90)
+                        ):
+                            seen[f"{ndir}|{line}"] = 0.90
                             continue
                         if line not in seen:
-                            seen[f"{ndir}|{line}"] = 0.73
+                            seen[f"{ndir}|{line}"] = 0.89
 
         for item, relevance in seen.items():
             # q(item, relevance)
@@ -225,16 +266,16 @@ class Runner(dbus.service.Object):
             if ".stversions/" in item:
                 relevance = relevance - 0.10
             # data, text, icon, type (Plasma::QueryType), relevance (0-1), properties (subtext, category and urls)
-            results += [(
-                item,
-                item.rsplit("|")[-1],
-                "document-edit",
-                100,
-                relevance,
-                {
-                    "subtext": item
-                },
-            )]
+            results += [
+                (
+                    item,
+                    item.rsplit("|")[-1],
+                    "document-edit",
+                    100,
+                    relevance,
+                    {"subtext": item},
+                )
+            ]
 
         for ndir in self.notes_dirs:
             has_file = False
@@ -246,16 +287,16 @@ class Runner(dbus.service.Object):
 
             # If a file with exact match was not found, provide a creation option
             if not has_file:
-                results += [(
-                    f"{ndir}|{hyphenated_lcq}.md"
-                    f"Create {create_path}",
-                    "document-edit",
-                    100,
-                    1.0,
-                    {
-                        "subtext": hyphenated_lcq # XXX
-                    },
-                )]
+                # q(1)
+                results += [
+                    (
+                        f"{ndir}|{hyphenated_lcq}.md" f"Create {create_path}",
+                        "document-edit",
+                        100,
+                        1.0,
+                        {"subtext": hyphenated_lcq},  # XXX
+                    )
+                ]
 
         results.sort(key=lambda x: x[4], reverse=True)
         return results[:10]
