@@ -1,11 +1,10 @@
 #!/usr/bin/python3
-"""A Plasma runner."""
+"""A Plasma runner for markdown files."""
 
 import os
 import re
 import subprocess
 from contextlib import suppress
-from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -14,18 +13,13 @@ import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
 
-# from urllib.parse import quote
-
-
 DBusGMainLoop(set_as_default=True)
 
-OBJPATH = "/%{APPNAMELC}"
-IFACE = "org.kde.krunner1"
-SERVICE = "org.kde.%{APPNAMELC}"
+objpath = "/runner"  # Default value for X-Plasma-DBusRunner-Path metadata property
+iface = "org.kde.krunner1"
 
 
-@cache
-def get_opener(data: str) -> list[str] | None:
+def get_opener(data: str):
     (vault, note) = data.rsplit("|")
     datapath = str(Path(vault, note))
 
@@ -66,20 +60,19 @@ def get_opener(data: str) -> list[str] | None:
 
 class Runner(dbus.service.Object):
     def __init__(self):
-        # self.notes_dirs = []
-        # notes_config = Path("~/.config/notes-krunner").expanduser()
-        # with open(notes_config) as conf:
-        #     for line in conf.readlines():
-        #         self.notes_dirs += [line.rstrip()]
-        self.notes_dirs = [Path("~/Sync-Now/Portable/notes").expanduser().as_posix()]
         dbus.service.Object.__init__(
             self,
-            dbus.service.BusName(SERVICE, dbus.SessionBus()),
-            OBJPATH,
+            dbus.service.BusName("org.kde.%{APPNAMELC}", dbus.SessionBus()),
+            objpath,
         )
+        self.notes_dirs = []
+        notes_config = Path("~/.config/notes-krunner").expanduser()
+        with open(notes_config) as conf:
+            for line in conf.readlines():
+                self.notes_dirs += [Path(line.rstrip()).expanduser().as_posix()]
 
-    @cache
-    @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})")
+
+    @dbus.service.method(iface, in_signature='s', out_signature='a(sssida{sv})')
     def Match(self, query: str):
         """This method is used to get the matches and it returns a list of tuples"""
         # NoMatch = 0, CompletionMatch = 10, PossibleMatch = 30, InformationalMatch = 50, HelperMatch = 70, ExactMatch = 100
@@ -302,21 +295,19 @@ class Runner(dbus.service.Object):
         results.sort(key=lambda x: x[4], reverse=True)
         return results[:10]
 
-    @dbus.service.method(IFACE, out_signature="a(sss)")
+    @dbus.service.method(iface, out_signature='a(sss)')
     def Actions(self):
-        # pylint: enable=
         # id, text, icon
         return [("id", "Tooltip", "planetkde")]
 
-    @dbus.service.method(IFACE, in_signature="ss")
+    @dbus.service.method(iface, in_signature='ss')
     def Run(self, data: str, action_id: str):
+        print(data, action_id)
         with suppress(Exception):
             opener = get_opener(data)
             if opener:
                 _ = subprocess.Popen(opener).pid
 
-
-# print(data, action_id)
 
 runner = Runner()
 loop = GLib.MainLoop()
