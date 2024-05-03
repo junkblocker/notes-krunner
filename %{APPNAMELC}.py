@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 """A Plasma runner."""
+
 import os
 import re
 import subprocess
@@ -9,7 +10,6 @@ from pathlib import Path
 from urllib.parse import quote
 
 import dbus.service
-
 # import q
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
@@ -290,7 +290,8 @@ class Runner(dbus.service.Object):
                 # q(1)
                 results += [
                     (
-                        f"{ndir}|{hyphenated_lcq}.md" f"Create {create_path}",
+                        f"{ndir}|{hyphenated_lcq}.md",
+                        f"Create {create_path}",
                         "document-edit",
                         100,
                         1.0,
