@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import dbus.service
+
 # import q
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
@@ -24,9 +25,13 @@ def get_opener(data: str):
     datapath = str(Path(vault, note))
 
     # Obsidian has issues opening paths with spaces in them even when URL escaped
-    # and kate has a previewer
-    if " " in note and Path("/usr/bin/kate").exists():
-        return ["/usr/bin/kate", datapath]
+    # Kate's preview plugin seems to be having issues
+    # nvim's markdown rendering with the right plugins is really good now
+    if " " in note:
+        if Path("/usr/bin/nvim-qt").exists():
+            return ["/usr/bin/nvim-qt", datapath]
+        elif Path("/usr/bin/kate").exists():
+            return ["/usr/bin/kate", datapath]
 
     if (
         Path("/var/lib/flatpak/app/md.obsidian.Obsidian").exists()
@@ -43,9 +48,9 @@ def get_opener(data: str):
         ]
 
     for opt in (
+        "/usr/bin/nvim-qt",
         "/usr/bin/kate",
         "/usr/bin/kwrite",
-        "/usr/bin/nvim-qt",
         "/usr/bin/gedit",
     ):
         if Path(opt).exists():
@@ -71,8 +76,7 @@ class Runner(dbus.service.Object):
             for line in conf.readlines():
                 self.notes_dirs += [Path(line.rstrip()).expanduser().as_posix()]
 
-
-    @dbus.service.method(iface, in_signature='s', out_signature='a(sssida{sv})')
+    @dbus.service.method(iface, in_signature="s", out_signature="a(sssida{sv})")
     def Match(self, query: str):
         """This method is used to get the matches and it returns a list of tuples"""
         # NoMatch = 0, CompletionMatch = 10, PossibleMatch = 30, InformationalMatch = 50, HelperMatch = 70, ExactMatch = 100
@@ -295,12 +299,12 @@ class Runner(dbus.service.Object):
         results.sort(key=lambda x: x[4], reverse=True)
         return results[:10]
 
-    @dbus.service.method(iface, out_signature='a(sss)')
+    @dbus.service.method(iface, out_signature="a(sss)")
     def Actions(self):
         # id, text, icon
         return [("id", "Tooltip", "planetkde")]
 
-    @dbus.service.method(iface, in_signature='ss')
+    @dbus.service.method(iface, in_signature="ss")
     def Run(self, data: str, action_id: str):
         print(data, action_id)
         with suppress(Exception):
