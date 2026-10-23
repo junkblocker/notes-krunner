@@ -1,9 +1,11 @@
 #!/usr/bin/python3
 """A Plasma runner for markdown files."""
 
+import importlib.util
 import os
 import re
 import subprocess
+import sys
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import quote
@@ -18,7 +20,18 @@ DBusGMainLoop(set_as_default=True)
 
 objpath = "/runner"  # Default value for X-Plasma-DBusRunner-Path metadata property
 iface = "org.kde.krunner1"
+config_path = Path.home() / ".config" / "notes-krunner.py"
 
+user_config = None
+if config_path.exists():
+    spec = importlib.util.spec_from_file_location("user_config", config_path)
+    if spec and spec.loader:
+        user_config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(user_config)
+
+FOLDERS = [Path(f).expanduser().as_posix() for f in getattr(user_config, "FOLDERS", ["/dev/null"])]
+FORMATS = getattr(user_config, "FORMATS", ["org", "md"])
+PREFERRED_FORMAT = getattr(user_config, "PREFERRED_FORMAT", "org")
 
 def get_opener(data: str):
     (vault, note) = data.rsplit("|")
@@ -28,6 +41,8 @@ def get_opener(data: str):
     # Kate's preview plugin seems to be having issues
     # nvim's markdown rendering with the right plugins is really good now
     if " " in note:
+        if Path(os.environ["HOME"] + "/bin/e").exists():
+            return [os.environ["HOME"] + "/bin/e", datapath]
         if Path("/usr/bin/nvim-qt").exists():
             return ["/usr/bin/nvim-qt", datapath]
         elif Path("/usr/bin/kate").exists():
@@ -48,6 +63,7 @@ def get_opener(data: str):
         ]
 
     for opt in (
+        os.environ["HOME"] + "/bin/e",
         "/usr/bin/nvim-qt",
         "/usr/bin/kate",
         "/usr/bin/kwrite",
@@ -70,11 +86,7 @@ class Runner(dbus.service.Object):
             dbus.service.BusName("org.kde.%{APPNAMELC}", dbus.SessionBus()),
             objpath,
         )
-        self.notes_dirs = []
-        notes_config = Path("~/.config/notes-krunner").expanduser()
-        with open(notes_config) as conf:
-            for line in conf.readlines():
-                self.notes_dirs += [Path(line.rstrip()).expanduser().as_posix()]
+        self.notes_dirs = FOLDERS
 
     @dbus.service.method(iface, in_signature="s", out_signature="a(sssida{sv})")
     def Match(self, query: str):
@@ -125,8 +137,17 @@ class Runner(dbus.service.Object):
                     or ".obsidian/" in line
                     or "_attic/" in line
                     or ".trash" in line
+                    or ".git/" in line
+                    or ".codesearch" in line
                     or line.endswith("/tags")
                 ):
+                    continue
+                found_format = False
+                for fmt in FORMATS:
+                    if line.endswith("." + fmt):
+                        found_format = True
+                        break
+                if not found_format:
                     continue
                 with suppress(Exception):
                     if lcquery == line.lower().rsplit("/", 2)[1].rsplit(".", 2)[0] and (
@@ -162,6 +183,13 @@ class Runner(dbus.service.Object):
 
             result = subprocess.run(expr, capture_output=True, check=False)
             for line in str.split(result.stdout.decode("UTF-8"), "\n"):
+                found_format = False
+                for fmt in FORMATS:
+                    if line.endswith("." + fmt):
+                        found_format = True
+                        break
+                if not found_format:
+                    continue
                 if line != "" and ".obsidian/" not in line:
                     if lcquery in line.lower() and (
                         (line not in seen) or (seen[line] < 0.98)
@@ -276,7 +304,7 @@ class Runner(dbus.service.Object):
 
         for ndir in self.notes_dirs:
             has_file = False
-            create_path = Path(ndir, hyphenated_lcq).as_posix() + ".md"
+            create_path = Path(ndir, hyphenated_lcq).as_posix() + PREFERRED_FORMAT
             for line in seen:
                 if Path(*line.rsplit("|", 2)).as_posix() == create_path:
                     has_file = True
@@ -287,7 +315,7 @@ class Runner(dbus.service.Object):
                 # q(1)
                 results += [
                     (
-                        f"{ndir}|{hyphenated_lcq}.md",
+                        f"{ndir}|{hyphenated_lcq}." + PREFERRED_FORMAT,
                         f"Create {create_path}",
                         "document-edit",
                         100,
