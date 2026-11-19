@@ -64,13 +64,19 @@ Optional sgrep searches run asynchronously and use a separate local index.
 
 ./install.sh
 
+The desktop session starts the Notes runner on demand through D-Bus.
+Reinstalling stops older copies so the next request starts the updated runner.
+
 ## Uninstall
 
 ./uninstall.sh
+
+This removes the plugin registration and generated files, then stops its
+running copies.
 
 ## Verify changes
 
 `/usr/bin/python3 -m unittest -v test_runner` uses temporary notes and a temporary
 Git repository. It requires the system D-Bus and GLib Python bindings.
 Edit `%{APPNAMELC}.py`; `install.sh` renders it to `notes.py`, which the installed
-D-Bus service and autostart entry execute.
+D-Bus service executes.

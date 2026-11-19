@@ -52,12 +52,13 @@ mkdir -p "$krunner_dbusdir" || die "Could not create directory $krunner_dbusdir"
 mkdir -p "$services_dir" || die "Could not create directory $services_dir"
 
 render "$PROJECTDIR/%{APPNAMELC}.desktop" "$krunner_dbusdir/$APPNAMELC.desktop"
-render "$PROJECTDIR/%{APPNAMELC}_autostart.desktop" ~/.config/autostart/"${APPNAMELC}_autostart.desktop"
-render "$PROJECTDIR/org.kde.%{APPNAMELC}.service" "$services_dir/org.kde.$APPNAMELC.service"
 render "$PROJECTDIR/%{APPNAMELC}.py" "$PROJECTDIR/$APPNAMELC.py"
+render "$PROJECTDIR/org.kde.%{APPNAMELC}.service" "$services_dir/org.kde.$APPNAMELC.service"
 render "$PROJECTDIR/krunner-plugininstallerrc.template" "$PROJECTDIR/krunner-plugininstallerrc"
 
-command rm -rf ~/.cache/krunner || true
+# 2026-11-19: D-Bus activation owns startup. Retire the second launch path.
+rm -f -- "$HOME/.config/autostart/${APPNAMELC}_autostart.desktop" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/${APPNAMELC}_autostart.desktop"
+/usr/bin/python3 "$PROJECTDIR/stop-runner.py" "$PROJECTDIR/$APPNAMELC.py"
 kquitapp6 krunner >/dev/null 2>&1 || true
-dex-autostart ~/.config/autostart/"${APPNAMELC}_autostart.desktop"
-echo "Done".
+echo "Done."

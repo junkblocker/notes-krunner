@@ -323,7 +323,7 @@ class Runner(dbus.service.Object):
     def __init__(self):
         dbus.service.Object.__init__(
             self,
-            dbus.service.BusName("org.kde.%{APPNAMELC}", dbus.SessionBus()),
+            dbus.service.BusName("org.kde.%{APPNAMELC}", dbus.SessionBus(), do_not_queue=True),
             objpath,
         )
         self.notes_dirs = FOLDERS
@@ -488,6 +488,8 @@ class Runner(dbus.service.Object):
 
 
 if __name__ == "__main__":
-    runner = Runner()
-    loop = GLib.MainLoop()
-    loop.run()
+    try:
+        runner = Runner()
+    except dbus.exceptions.NameExistsException:
+        raise SystemExit(0) from None
+    GLib.MainLoop().run()

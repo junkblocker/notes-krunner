@@ -1,3 +1,2 @@
 - [2026-10-23] Revisit synchronous cold searches for very large vaults (%{APPNAMELC}.py:49) - Warm searches avoid repeated reads, but discovery and uncached reads can still block D-Bus; coordinate any larger redesign with the separate Wox migration.
 - [2026-10-23] Make the Obsidian opener vault-aware (%{APPNAMELC}.py:143) - Existing URLs hard-code vault=notes even though search supports multiple configured folders; preserve editor preferences when revisiting.
-- [2026-10-23] Review installer lifecycle and cache handling (install.sh:60) - Installation clears the KRunner cache and starts another process without checking an existing bus owner; this task refreshes only the installed Python files and owned plugin services.
