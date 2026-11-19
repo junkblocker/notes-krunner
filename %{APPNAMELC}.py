@@ -2,6 +2,7 @@
 """A Plasma runner for Markdown and Org notes."""
 
 import importlib.util
+import json
 import logging
 import os
 import re
@@ -14,15 +15,15 @@ from pathlib import Path
 from urllib.parse import quote
 
 import dbus.service
-
 from dbus.mainloop.glib import DBusGMainLoop
-from gi.repository import GLib
+from gi.repository import Gio, GLib
 
 DBusGMainLoop(set_as_default=True)
 
 objpath = "/runner"  # Default value for X-Plasma-DBusRunner-Path metadata property
 iface = "org.kde.krunner1"
-config_path = Path.home() / ".config" / "notes-krunner.py"
+config_dir = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+config_path = config_dir / "notes-krunner.py"
 
 user_config = None
 if config_path.exists():
@@ -32,7 +33,7 @@ if config_path.exists():
         spec.loader.exec_module(user_config)
 
 # 2026-10-23: Keep both config formats; missing config disables this runner.
-legacy_config = Path.home() / ".config" / "notes-krunner"
+legacy_config = config_dir / "notes-krunner"
 default_folders = (
     legacy_config.read_text().splitlines() if legacy_config.is_file() else []
 )
@@ -41,8 +42,10 @@ FOLDERS = [
     for f in getattr(user_config, "FOLDERS", default_folders)
     if str(f).strip()
 ]
-FORMATS = getattr(user_config, "FORMATS", ["org", "md"])
+FORMATS = {extension.casefold() for extension in getattr(user_config, "FORMATS", ["org", "md"])}
 PREFERRED_FORMAT = getattr(user_config, "PREFERRED_FORMAT", "org").lstrip(".")
+SEMANTIC_SEARCH = getattr(user_config, "SEMANTIC_SEARCH", True)
+MODELS_DIR = getattr(user_config, "MODELS_DIR", None)
 LOG = logging.getLogger(__name__)
 
 
@@ -62,7 +65,7 @@ class NoteIndex:
     def allowed(name):
         parts = Path(name).parts
         return (
-            Path(name).suffix.lstrip(".") in FORMATS
+            Path(name).suffix.lstrip(".").casefold() in FORMATS
             and not any(
                 part in {".git", ".obsidian", ".trash", ".codesearch"} for part in parts
             )
@@ -139,6 +142,23 @@ class NoteIndex:
             self.bytes += entry[2]
         return entry[1]
 
+    def name_exists(self, names, folders):
+        """Check indexed subfolders and freshly saved notes at the creation roots."""
+        if any(
+            Path(name).name.casefold() in names and (folder / name).exists()
+            for folder, name in self.files
+        ):
+            return True
+        for folder in folders:
+            try:
+                with os.scandir(folder) as entries:
+                    if any(entry.name.casefold() in names for entry in entries):
+                        return True
+            except OSError as error:
+                LOG.warning("Cannot check note name in %s: %s", folder, error)
+                return True
+        return False
+
 
 def get_opener(data: str):
     (vault, note) = data.rsplit("|")
@@ -186,6 +206,119 @@ def get_opener(data: str):
     return None
 
 
+def semantic_backend():
+    if not SEMANTIC_SEARCH or not shutil.which("rg"):
+        return None
+    home = Path.home()
+    program = Path(os.environ.get("EMACS_SGREP_DIR") or home / ".local/libexec/emacs-sgrep") / "sgrep"
+    if not os.access(program, os.X_OK):
+        return None
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache")
+    override = os.environ.get("HF_HUB_CACHE")
+    # 2026-11-19: A missing configured model must preserve local cache discovery.
+    hubs = [Path(override)] if override else [
+        Path(root).expanduser() / "sgrep-models/hub"
+        for root in (MODELS_DIR, cache) if root
+    ]
+    for hub in hubs:
+        snapshots = hub / "models--minishlab--potion-base-8M/snapshots"
+        if any(
+            weights.is_file() and weights.with_name("tokenizer.json").is_file()
+            for weights in snapshots.glob("*/model.safetensors")
+        ):
+            return program, hub
+    return None
+
+
+def semantic_matches(folder, output, literal_ids):
+    for passage in json.loads(output):
+        name = passage["path"]
+        similarity = passage["scores"]["semantic"]
+        path = (folder / name).resolve()
+        # 2026-11-18: KRunner sends app names too. Suppress weak matches and
+        # keep literal search ahead of the optional passages.
+        if similarity < 0.25 or f"{folder}|{name}" in literal_ids:
+            continue
+        if not path.is_relative_to(folder.resolve()) or not path.is_file() or not NoteIndex.allowed(name):
+            continue
+        line = passage["start"]
+        excerpt = " ".join(passage["content"].split())[:140]
+        yield (
+            "semantic:" + json.dumps([str(path), line]),
+            f"Semantic: {name}",
+            "document-edit",
+            70,
+            min(0.96, 0.85 + 0.2 * similarity),
+            {
+                # 2026-11-18: Plasma limits rows per displayed category.
+                "category": "Related Notes",
+                "subtext": f"{folder.name}/{name}:{line} - {excerpt}",
+            },
+        )
+
+
+class SemanticSearch:
+    """Run each configured folder off the D-Bus event loop."""
+
+    def __init__(self, query, folders, backend, literal, reply):
+        self.processes = set()
+        self.rows = []
+        self.reply = reply
+        self.literal = literal
+        self.literal_ids = {row[0] for row in literal}
+        self.timer = GLib.timeout_add(3500, self.expire)
+        program, hub = backend
+        launcher = Gio.SubprocessLauncher.new(
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+        )
+        launcher.setenv("HF_HUB_CACHE", str(hub), True)
+        launcher.setenv("HF_HUB_OFFLINE", "1", True)
+        for folder in folders:
+            if not folder.is_dir():
+                continue
+            try:
+                process = launcher.spawnv([
+                    str(program), "--model", "text", "--json", "--explain",
+                    "-n", "6", "--", query, str(folder),
+                ])
+                self.processes.add(process)
+                process.communicate_utf8_async(None, None, self.finished, folder)
+            except GLib.Error as error:
+                LOG.warning("Cannot start sgrep: %s", error)
+
+    def finished(self, process, result, folder):
+        if process not in self.processes:
+            return
+        self.processes.remove(process)
+        try:
+            ok, stdout, _ = process.communicate_utf8_finish(result)
+            if ok and process.get_successful():
+                self.rows.extend(semantic_matches(folder, stdout, self.literal_ids))
+        except (GLib.Error, OSError, ValueError, TypeError, KeyError) as error:
+            LOG.warning("Cannot read sgrep matches: %s", error)
+        if not self.processes:
+            self.finish()
+
+    def expire(self):
+        self.timer = None
+        self.finish()
+        return GLib.SOURCE_REMOVE
+
+    def finish(self):
+        if self.timer is not None:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        for process in self.processes:
+            process.force_exit()
+        self.processes.clear()
+        if self.reply is not None:
+            reply, self.reply = self.reply, None
+            unique = {}
+            for row in sorted(self.rows, key=itemgetter(4), reverse=True):
+                unique.setdefault(row[0], row)
+            reply(self.literal + list(unique.values())[:3])
+
+
 class Runner(dbus.service.Object):
     def __init__(self):
         dbus.service.Object.__init__(
@@ -195,12 +328,36 @@ class Runner(dbus.service.Object):
         )
         self.notes_dirs = FOLDERS
         self.index = NoteIndex(self.notes_dirs)
+        self.semantic = None
 
-    @dbus.service.method(iface, in_signature="s", out_signature="a(sssida{sv})")
-    def Match(self, query: str):
+    @dbus.service.method(
+        iface, in_signature="s", out_signature="a(sssida{sv})",
+        async_callbacks=("reply", "error"),
+    )
+    def Match(self, query: str, reply=None, error=None):
+        if self.semantic is not None:
+            self.semantic.finish()
+            self.semantic = None
+        # 2026-11-19: Use the same title for searching and offering creation.
+        query = re.sub(r"^semantic:\s*", "", query.strip(), flags=re.IGNORECASE)
+        literal = self.literal_matches(query)
+        if reply is None:
+            return literal
+        backend = semantic_backend() if len(query.strip()) >= 3 else None
+        if not backend:
+            reply(literal)
+        else:
+            self.semantic = SemanticSearch(query, self.index.folders, backend, literal, reply)
+            if not self.semantic.processes:
+                self.semantic.finish()
+
+    def literal_matches(self, query):
         query = query.strip().lower()
-        if len(query) < 3:
+        if not query:
             return []
+        if len(query) < 3:
+            self.index.refresh()
+            return self.creation_matches(query)
         words = query.split()
         # 2026-10-23: Queries are literal text, never regular expressions.
         patterns = [re.compile(r"\b" + re.escape(word) + r"\b") for word in words]
@@ -275,27 +432,32 @@ class Runner(dbus.service.Object):
                 )
             )
 
+        results.sort(key=itemgetter(4), reverse=True)
+        # Plasma limits rows per category. Keep valid creation actions outside
+        # the ten-note limit so a full Notes category cannot hide them.
+        return results[:10] + self.creation_matches(query)
+
+    def creation_matches(self, query):
         stem = query.replace(" ", "-")
         # A create result must stay inside the configured vault.
-        if not any(char in stem for char in "/\\|\0") and not any(
-            ord(char) < 32 for char in stem
-        ):
-            for folder in self.index.folders:
-                name = f"{stem}.{PREFERRED_FORMAT}"
-                target = folder / name
-                if folder.is_dir() and not target.exists():
-                    results.append(
-                        (
-                            f"{folder}|{name}",
-                            f"Create {target}",
-                            "document-edit",
-                            100,
-                            1.0,
-                            {"subtext": stem},
-                        )
-                    )
-        results.sort(key=itemgetter(4), reverse=True)
-        return results[:10]
+        if any(char in stem for char in "/\\|\0") or any(ord(char) < 32 for char in stem):
+            return []
+        name = f"{stem}.{PREFERRED_FORMAT}"
+        names = {name.casefold(), f"{query}.{PREFERRED_FORMAT}".casefold()}
+        folders = [folder for folder in self.index.folders if folder.is_dir()]
+        if self.index.name_exists(names, folders):
+            return []
+        return [
+            (
+                f"{folder}|{name}",
+                f"Create {folder / name}",
+                "document-edit",
+                30,
+                0.4,
+                {"category": "Create Note", "subtext": stem},
+            )
+            for folder in folders
+        ]
 
     @dbus.service.method(iface, out_signature="a(sss)")
     def Actions(self):
@@ -305,10 +467,23 @@ class Runner(dbus.service.Object):
     @dbus.service.method(iface, in_signature="ss")
     def Run(self, data: str, action_id: str):
         try:
-            opener = get_opener(data)
+            if data.startswith("semantic:"):
+                path, line = json.loads(data.removeprefix("semantic:"))
+                path = Path(path).resolve()
+                if not isinstance(line, int) or line < 1 or not path.is_file() or not any(
+                    path.is_relative_to(folder.resolve()) for folder in self.index.folders
+                ):
+                    return
+                editor = Path.home() / "bin/e"
+                opener = (
+                    [str(editor), "--editor=emacs", f"+{line}", str(path)]
+                    if os.access(editor, os.X_OK) else ["xdg-open", str(path)]
+                )
+            else:
+                opener = get_opener(data)
             if opener:
                 _ = subprocess.Popen(opener).pid
-        except (OSError, ValueError) as error:
+        except (OSError, TypeError, ValueError) as error:
             LOG.warning("Cannot open note: %s", error)
 
 

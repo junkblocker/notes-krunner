@@ -1,6 +1,7 @@
 """Run with /usr/bin/python3 -m unittest -v (system D-Bus bindings)."""
 
 import importlib.util
+import json
 import os
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ def load_runner():
     with (
         tempfile.TemporaryDirectory() as home,
         patch("pathlib.Path.home", return_value=Path(home)),
+        patch.dict(os.environ, {"XDG_CONFIG_HOME": home}),
     ):
         spec.loader.exec_module(module)
     return module
@@ -53,6 +55,47 @@ class NotesTests(unittest.TestCase):
             rows = self.runner.Match("wox")
         self.assertEqual(rows[0][1], f"Create {self.root}/wox.org")
         self.assertEqual(rows[0][0], f"{self.root}|wox.org")
+
+    def test_semantic_prefix_is_removed_before_search_and_creation(self):
+        query = " Semantic: word "
+        (self.root / "Existing.org").touch()
+        create, = self.runner.Match(query)
+        self.assertEqual(create[0], f"{self.root}|word.org")
+        self.assertEqual(create[1], f"Create {self.root}/word.org")
+        note, = self.runner.Match("semantic: Existing")
+        self.assertEqual(note[1], "Existing.org")
+        self.assertEqual(self.runner.Match("semantic: "), [])
+
+    def test_existing_notes_rank_ahead_of_create(self):
+        rows = self.runner.Match("alpha beta")
+        existing = [row for row in rows if not row[1].startswith("Create ")]
+        create = [row for row in rows if row[1].startswith("Create ")]
+        self.assertTrue(existing and create)
+        self.assertIn(rows[0], existing)
+        self.assertGreater(min(row[4] for row in existing), max(row[4] for row in create))
+
+    def test_missing_note_can_be_created_even_with_ten_matches(self):
+        for i in range(12):
+            (self.root / f"Existing {i}.org").write_text("An example word appears here.\n")
+        rows = self.runner.Match("example word")
+        self.assertEqual(len(rows), 11)
+        create = rows[-1]
+        self.assertEqual(create[1], f"Create {self.root}/example-word.org")
+        self.assertEqual(create[5]["category"], "Create Note")
+        journals = self.root / "journal"
+        journals.mkdir()
+        self.runner.index.folders.append(journals)
+        target = journals / "Example-WORD.ORG"
+        target.touch()
+        self.assertFalse(any(row[1].startswith("Create ") for row in self.runner.Match("example word")))
+        target.rename(journals / "EXAMPLE WORD.ORG")
+        self.assertFalse(any(row[1].startswith("Create ") for row in self.runner.Match("example word")))
+
+    def test_short_word_can_be_created_when_the_filename_is_missing(self):
+        create, = self.runner.Match("S3")
+        self.assertEqual(create[1], f"Create {self.root}/s3.org")
+        (self.root / "S3.ORG").touch()
+        self.assertEqual(self.runner.Match("s3"), [])
 
     def test_edits_are_visible_without_rescanning_or_spawning_searches(self):
         with (
@@ -102,6 +145,95 @@ class NotesTests(unittest.TestCase):
         rows = self.runner.Match("alpha beta")
         self.assertTrue(any(row[1] == "new.md" for row in rows))
         self.assertFalse(any(row[1] == "ignored.md" for row in rows))
+
+
+    def test_semantic_matches_follow_literal_notes_and_open_the_line(self):
+        literal = self.root / "Lake Guide.org"
+        literal.write_text("A data lake holds raw data.\n")
+        for i in range(12):
+            (self.root / f"Literal {i}.org").write_text("data lake\n")
+        related = self.root / "Object Storage.org"
+        related.write_text("Cloud storage\nAmazon S3 stores files in buckets.\n")
+        fake_sgrep = self.root / "sgrep"
+        matches = [
+            {"path": literal.name, "start": 1, "content": "A data lake holds raw data.",
+             "scores": {"semantic": 0.6}},
+            {"path": related.name, "start": 2, "content": "Amazon S3 stores files in buckets.",
+             "scores": {"semantic": 0.3}},
+            {"path": "other.md", "start": 1, "content": "An unrelated line.",
+             "scores": {"semantic": 0.1}},
+        ]
+        fake_sgrep.write_text(
+            "#!/usr/bin/python3\nimport sys\n"
+            f"assert sys.argv[-2] == 'data lake'\nprint({json.dumps(matches)!r})\n",
+            encoding="utf-8",
+        )
+        fake_sgrep.chmod(0o755)
+        replies = []
+        loop = plugin.GLib.MainLoop()
+
+        def receive(rows):
+            replies.append(rows)
+            loop.quit()
+
+        def stop_loop():
+            loop.quit()
+            return True
+
+        with patch.object(plugin, "semantic_backend", return_value=(fake_sgrep, self.root)):
+            timer = plugin.GLib.timeout_add_seconds(5, stop_loop)
+            try:
+                self.runner.Match("semantic: data lake", receive)
+                if not replies:
+                    loop.run()
+            finally:
+                plugin.GLib.source_remove(timer)
+        rows, = replies
+        self.assertEqual(
+            sum(not row[0].startswith("semantic:") and not row[1].startswith("Create ") for row in rows),
+            10,
+        )
+        self.assertTrue(any(row[1].startswith("Create ") for row in rows))
+        literal_row, = (row for row in rows if row[1] == literal.name)
+        related_row, = (row for row in rows if row[1] == f"Semantic: {related.name}")
+        self.assertLess(rows.index(literal_row), rows.index(related_row))
+        self.assertNotIn("Semantic: other.md", [row[1] for row in rows])
+        self.assertIn("Object Storage.org:2", related_row[5]["subtext"])
+        self.assertEqual(related_row[5]["category"], "Related Notes")
+        self.assertGreater(literal_row[4], related_row[4])
+        with (
+            patch("pathlib.Path.home", return_value=self.root),
+            patch.object(plugin.os, "access", return_value=True),
+            patch.object(plugin.subprocess, "Popen") as open_note,
+        ):
+            self.runner.Run(related_row[0], "")
+        self.assertEqual(open_note.call_args.args[0][-2:], ["+2", str(related)])
+
+    def test_unavailable_semantic_search_keeps_literal_results(self):
+        with patch.object(plugin, "semantic_backend", return_value=None):
+            replies = []
+            self.runner.Match("alpha beta", replies.append)
+        self.assertEqual(replies, [self.runner.Match("alpha beta")])
+
+    def test_semantic_backend_uses_configured_models_and_preserves_local_cache(self):
+        program = self.root / "sgrep"
+        program.touch(mode=0o755)
+        cache = self.root / ".cache"
+        configured = self.root / "configured"
+        for directory in (cache, configured):
+            snapshot = directory / "sgrep-models/hub/models--minishlab--potion-base-8M/snapshots/default"
+            snapshot.mkdir(parents=True)
+            (snapshot / "model.safetensors").touch()
+            (snapshot / "tokenizer.json").touch()
+        with (
+            patch("pathlib.Path.home", return_value=self.root),
+            patch.dict(os.environ, {"HOME": str(self.root), "EMACS_SGREP_DIR": str(self.root)}, clear=True),
+            patch.object(plugin.shutil, "which", return_value="/usr/bin/rg"),
+            patch.object(plugin, "MODELS_DIR", "~/configured"),
+        ):
+            self.assertEqual(plugin.semantic_backend(), (program, configured / "sgrep-models/hub"))
+            with patch.object(plugin, "MODELS_DIR", "~/missing"):
+                self.assertEqual(plugin.semantic_backend(), (program, cache / "sgrep-models/hub"))
 
 
 if __name__ == "__main__":
